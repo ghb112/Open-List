@@ -253,4 +253,6 @@
   // "r2_buckets": [
   //   { "binding": "R2", "bucket_name": "your-bucket" }
   // ],
+  // wrangler.jsonc
+     "name": "open-list",
 }
