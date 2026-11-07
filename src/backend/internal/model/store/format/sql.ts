@@ -125,14 +125,54 @@ export const sqlFormat: FormatAdapter = {
         if (pk !== undefined && pk !== null) keepKeys.push(String(pk))
       }
 
-      // 删除本端已移除的行（keys 为空则整表清空，与原语义一致）
-      const delSql =
-        keepKeys.length > 0
-          ? `DELETE FROM ${qn(table, env)} WHERE ${quote(keyCol)} NOT IN (${keepKeys
+      // 删除本端已移除的行（keys 为空则整表清空，与原语义一致）。
+      //
+      // 注意：不要用 `DELETE ... WHERE key NOT IN (全部 keepKeys)`。
+      // D1 单条语句最多 100 个绑定参数，而默认设置就有 114 个键——
+      // 旧写法会生成带 114 个占位符的 DELETE，D1 直接报
+      // "too many SQL variables"，导致保存失败、初始化 500。
+      // 改为先读库里现有的键，只删「库里有、本端没有」的行，并按每批
+      // 最多 50 个参数分批 IN 删除；没有过期行时不产生 DELETE。
+      if (keepKeys.length === 0) {
+        statements.push({ sql: `DELETE FROM ${qn(table, env)}`, params: [] })
+      } else {
+        let stale: string[] | null = null
+        if (driver.query) {
+          try {
+            const rows = await driver.query(
+              `SELECT ${quote(keyCol)} FROM ${qn(table, env)}`,
+              [],
+              env,
+            )
+            const keepSet = new Set(keepKeys)
+            stale = (rows || [])
+              .map((r: any) => String(r?.[keyCol] ?? ""))
+              .filter((k) => !keepSet.has(k))
+          } catch {
+            stale = null
+          }
+        }
+        if (stale === null) {
+          // 读不到现存键（驱动无 query 能力或读取失败）：退回旧写法
+          statements.push({
+            sql: `DELETE FROM ${qn(table, env)} WHERE ${quote(keyCol)} NOT IN (${keepKeys
               .map(() => "?")
-              .join(", ")})`
-          : `DELETE FROM ${qn(table, env)}`
-      statements.push({ sql: delSql, params: keepKeys })
+              .join(", ")})`,
+            params: keepKeys,
+          })
+        } else {
+          const CHUNK = 50
+          for (let i = 0; i < stale.length; i += CHUNK) {
+            const part = stale.slice(i, i + CHUNK)
+            statements.push({
+              sql: `DELETE FROM ${qn(table, env)} WHERE ${quote(keyCol)} IN (${part
+                .map(() => "?")
+                .join(", ")})`,
+              params: part,
+            })
+          }
+        }
+      }
     }
 
     // 标记已初始化（方言兼容的 UPSERT）

@@ -70,6 +70,12 @@ function createMockSqlDriver(name = "mock-sql"): Driver {
         const k = String(params[0])
         return schemaInfo.has(k) ? [{ v: schemaInfo.get(k) }] : []
       }
+      // SELECT `col` FROM `table`（sqlFormat.save 读取现存主键以计算过期行）
+      const colSel = trimmed.match(/^SELECT `?(\w+)`? FROM `?(\w+)`?$/i)
+      if (colSel) {
+        const [, col, table] = colSel
+        return ensureTable(table).map((r) => ({ [col]: r[col] }))
+      }
       // SELECT * FROM `table`
       const m = trimmed.match(/^SELECT \* FROM `?(\w+)`?/i)
       if (m) return ensureTable(m[1]).map((r) => ({ ...r }))
@@ -100,6 +106,20 @@ function createMockSqlDriver(name = "mock-sql"): Driver {
           tables.set(
             table,
             rows.filter((r: any) => keep.has(String(r[keyCol]))),
+          )
+          continue
+        }
+        // DELETE FROM `table` WHERE `key` IN (?, ?, ...)（分批清理已删行）
+        const delIn = trimmed.match(
+          /^DELETE FROM `?(\w+)`? WHERE `?(\w+)`? IN \(([^)]*)\)/i,
+        )
+        if (delIn) {
+          const [, table, keyCol] = delIn
+          const condemned = new Set(params.map((p) => String(p)))
+          const rows = ensureTable(table)
+          tables.set(
+            table,
+            rows.filter((r: any) => !condemned.has(String(r[keyCol]))),
           )
           continue
         }

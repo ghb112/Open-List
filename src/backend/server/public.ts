@@ -773,6 +773,12 @@ publicRouter.post("/init/setup", async (c) => {
 
   // 初始化是唯一允许「在一次成功读取（确认存储为空）之后写入空壳」的场景，
   // 因此显式 force；此时 db 已包含新建的管理员用户，本身也不再是空壳。
-  await saveDb(db, c.env, { force: true })
+  try {
+    await saveDb(db, c.env, { force: true })
+  } catch (err: any) {
+    // 保存失败时把 D1 原文记到日志（否则前端只剩一个通用 500，没法定位）
+    console.error("[DB] init/setup save failed: " + (err?.message || err))
+    throw err
+  }
   return c.json({ code: 200, message: "success", data: null })
 })
